@@ -1212,9 +1212,15 @@ cleanup:
 	return list.buffer ?: strdup("\0");
 }
 
+#ifdef __FreeBSD__
+#define BSD_INTERNAL
+#include "ipc_freebsd.c"
+#endif
+
+
 int ipc_get_device(struct wgdevice **dev, const char *iface)
 {
-#if defined(__linux__) || defined(__OpenBSD__)
+#if defined(__linux__) || defined(__OpenBSD__) || defined(__FreeBSD__)
 	if (userspace_has_wireguard_interface(iface))
 		return userspace_get_device(dev, iface);
 	return kernel_get_device(dev, iface);
@@ -1225,7 +1231,7 @@ int ipc_get_device(struct wgdevice **dev, const char *iface)
 
 int ipc_set_device(struct wgdevice *dev)
 {
-#if defined(__linux__) || defined(__OpenBSD__)
+#if defined(__linux__) || defined(__OpenBSD__) || defined(__FreeBSD__)
 	if (userspace_has_wireguard_interface(dev->name))
 		return userspace_set_device(dev);
 	return kernel_set_device(dev);
