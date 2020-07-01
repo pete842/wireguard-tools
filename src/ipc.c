@@ -925,7 +925,7 @@ out:
 }
 #endif
 
-#ifdef __OpenBSD__
+#if defined(__OpenBSD__) || defined(__FreeBSD__)
 static int get_dgram_socket(void)
 {
 	static int sock = -1;
@@ -964,7 +964,9 @@ out:
 	free(ifgr.ifgr_groups);
 	return ret;
 }
+#endif
 
+#if defined(__OpenBSD__)
 static int kernel_get_device(struct wgdevice **device, const char *iface)
 {
 	struct wg_data_io wgdata = { .wgd_size = 0 };
@@ -1194,7 +1196,7 @@ char *ipc_list_devices(void)
 	struct string_list list = { 0 };
 	int ret;
 
-#if defined(__linux__) || defined(__OpenBSD__)
+#if defined(__linux__) || defined(__OpenBSD__) || defined(__FreeBSD__)
 	ret = kernel_get_wireguard_interfaces(&list);
 	if (ret < 0)
 		goto cleanup;
