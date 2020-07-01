@@ -358,6 +358,7 @@ kernel_get_device(struct wgdevice **device, const char *ifname)
 	if ((dev = calloc(1, sizeof(*dev))) == NULL)
 		goto out;
 
+	strcpy(dev->name, ifname);
 	nvl = nvlist_unpack(packed, size, 0);
 
 	if (nvlist_exists_number(nvl, "listen-port")) {
