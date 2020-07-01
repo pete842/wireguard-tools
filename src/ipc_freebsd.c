@@ -325,15 +325,6 @@ is_match(const char *name)
 }
 
 static int
-get_dgram_socket(void)
-{
-	static int sock = -1;
-	if (sock < 0)
-		sock = socket(AF_INET, SOCK_DGRAM, 0);
-	return sock;
-}
-
-static int
 kernel_get_device(struct wgdevice **device, const char *ifname)
 {
 	size_t size;
