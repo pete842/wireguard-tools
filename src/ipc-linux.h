@@ -19,9 +19,12 @@
 #include <linux/rtnetlink.h>
 #include <linux/wireguard.h>
 #include <netinet/in.h>
+
 #include "containers.h"
+#include "parsing.h"
 #include "encoding.h"
 #include "netlink.h"
+#include "kyber/params.h"
 
 #define IPC_SUPPORTS_KERNEL_INTERFACE
 
@@ -159,8 +162,12 @@ again:
 	if (!peer) {
 		uint32_t flags = 0;
 
-		if (dev->flags & WGDEVICE_HAS_PRIVATE_KEY)
-			mnl_attr_put(nlh, WGDEVICE_A_PRIVATE_KEY, sizeof(dev->private_key), dev->private_key);
+        if (dev->flags & WGDEVICE_HAS_PRIVATE_KEY)
+            mnl_attr_put(nlh, WGDEVICE_A_PRIVATE_KEY, sizeof(dev->private_key), dev->private_key);
+        if (dev->flags & WGDEVICE_HAS_PQ_SECRET_KEY)
+            mnl_attr_put(nlh, WGDEVICE_A_PQ_SECRET_KEY, sizeof(dev->pq_sk), dev->pq_sk);
+        if (dev->flags & WGDEVICE_HAS_PQ_SECRET_KEY_PATH)
+            mnl_attr_put_strz(nlh, WGDEVICE_A_PQ_SECRET_KEY_PATH, dev->pq_sk_path);
 		if (dev->flags & WGDEVICE_HAS_LISTEN_PORT)
 			mnl_attr_put_u16(nlh, WGDEVICE_A_LISTEN_PORT, dev->listen_port);
 		if (dev->flags & WGDEVICE_HAS_FWMARK)
@@ -170,18 +177,22 @@ again:
 		if (flags)
 			mnl_attr_put_u32(nlh, WGDEVICE_A_FLAGS, flags);
 	}
-	if (!dev->first_peer)
-		goto send;
+	if (!dev->first_peer) {
+        goto send;
+    }
 	peers_nest = peer_nest = allowedips_nest = allowedip_nest = NULL;
 	peers_nest = mnl_attr_nest_start(nlh, WGDEVICE_A_PEERS);
 	for (peer = peer ? peer : dev->first_peer; peer; peer = peer->next_peer) {
 		uint32_t flags = 0;
-
 		peer_nest = mnl_attr_nest_start_check(nlh, SOCKET_BUFFER_SIZE, 0);
 		if (!peer_nest)
 			goto toobig_peers;
-		if (!mnl_attr_put_check(nlh, SOCKET_BUFFER_SIZE, WGPEER_A_PUBLIC_KEY, sizeof(peer->public_key), peer->public_key))
-			goto toobig_peers;
+		if (peer->flags & WGPEER_HAS_PQ_PUBLIC_KEY && peer->flags & WGPEER_HAS_PQ_PUBLIC_KEY_PATH) {
+            mnl_attr_put_strz(nlh, WGPEER_A_PQ_PUBLIC_KEY_PATH, peer->pq_pk_path);
+            if (!mnl_attr_put_check(nlh, SOCKET_BUFFER_SIZE, WGPEER_A_PQ_PUBLIC_KEY, sizeof(peer->pq_pk), peer->pq_pk))
+                goto toobig_peers;
+        } else if (!mnl_attr_put_check(nlh, SOCKET_BUFFER_SIZE, WGPEER_A_PUBLIC_KEY, sizeof(peer->public_key), peer->public_key))
+            goto toobig_peers;
 		if (peer->flags & WGPEER_REMOVE_ME)
 			flags |= WGPEER_F_REMOVE_ME;
 		if (!allowedip) {
@@ -257,6 +268,7 @@ toobig_peers:
 send:
 	if (mnlg_socket_send(nlg, nlh) < 0) {
 		ret = -errno;
+
 		goto out;
 	}
 	errno = 0;
@@ -326,7 +338,6 @@ static int parse_allowedips(const struct nlattr *attr, void *data)
 static int parse_peer(const struct nlattr *attr, void *data)
 {
 	struct wgpeer *peer = data;
-
 	switch (mnl_attr_get_type(attr)) {
 	case WGPEER_A_UNSPEC:
 		break;
@@ -336,6 +347,16 @@ static int parse_peer(const struct nlattr *attr, void *data)
 			peer->flags |= WGPEER_HAS_PUBLIC_KEY;
 		}
 		break;
+    case WGPEER_A_PQ_PUBLIC_KEY_PATH:
+        if (parse_keyfile_generic(peer->pq_pk, mnl_attr_get_payload(attr), KYBER_PUBLICKEYBYTES, KYBER_PUBLICKEYBYTES_B64)) {
+            memcpy(peer->pq_pk_trunc, peer->pq_pk, sizeof(peer->pq_pk_trunc));
+            strncpy(peer->pq_pk_path, mnl_attr_get_payload(attr), sizeof(peer->pq_pk_path) - 1);
+
+            peer->flags |= WGPEER_HAS_PQ_PUBLIC_KEY |
+                           WGPEER_HAS_PQ_PUBLIC_KEY_PATH |
+                           WGPEER_HAS_PQ_PUBLIC_KEY_TRUNC;
+        }
+        break;
 	case WGPEER_A_PRESHARED_KEY:
 		if (mnl_attr_get_payload_len(attr) == sizeof(peer->preshared_key)) {
 			memcpy(peer->preshared_key, mnl_attr_get_payload(attr), sizeof(peer->preshared_key));
@@ -383,7 +404,6 @@ static int parse_peers(const struct nlattr *attr, void *data)
 	struct wgdevice *device = data;
 	struct wgpeer *new_peer = calloc(1, sizeof(*new_peer));
 	int ret;
-
 	if (!new_peer) {
 		perror("calloc");
 		return MNL_CB_ERROR;
@@ -397,7 +417,7 @@ static int parse_peers(const struct nlattr *attr, void *data)
 	ret = mnl_attr_parse_nested(attr, parse_peer, new_peer);
 	if (!ret)
 		return ret;
-	if (!(new_peer->flags & WGPEER_HAS_PUBLIC_KEY))
+	if (!(new_peer->flags & WGPEER_HAS_PUBLIC_KEY || new_peer->flags & WGPEER_HAS_PQ_PUBLIC_KEY_PATH))
 		return MNL_CB_ERROR;
 	return MNL_CB_OK;
 }
@@ -405,7 +425,6 @@ static int parse_peers(const struct nlattr *attr, void *data)
 static int parse_device(const struct nlattr *attr, void *data)
 {
 	struct wgdevice *device = data;
-
 	switch (mnl_attr_get_type(attr)) {
 	case WGDEVICE_A_UNSPEC:
 		break;
@@ -431,6 +450,23 @@ static int parse_device(const struct nlattr *attr, void *data)
 			device->flags |= WGDEVICE_HAS_PUBLIC_KEY;
 		}
 		break;
+    case WGDEVICE_A_PQ_SECRET_KEY_PATH:
+        if (parse_keyfile_generic(device->pq_sk,
+                mnl_attr_get_payload(attr),
+                KYBER_SECRETKEYBYTES,
+                KYBER_SECRETKEYBYTES_B64)) {
+            memcpy(device->pq_sk_trunc, device->pq_sk, sizeof(device->pq_sk_trunc));
+            strncpy(device->pq_sk_path, mnl_attr_get_payload(attr), sizeof(device->pq_sk_path) - 1);
+            memcpy(device->pq_pk, device->pq_sk + KYBER_INDCPA_SECRETKEYBYTES, sizeof(device->pq_pk));
+            memcpy(device->pq_pk_trunc, device->pq_pk, sizeof(device->pq_pk_trunc));
+
+            device->flags |= WGDEVICE_HAS_PQ_SECRET_KEY |
+                             WGDEVICE_HAS_PQ_SECRET_KEY_PATH |
+                             WGDEVICE_HAS_PQ_SECRET_KEY_TRUNC |
+                             WGDEVICE_HAS_PQ_PUBLIC_KEY |
+                             WGDEVICE_HAS_PQ_PUBLIC_KEY_TRUNC;
+        }
+        break;
 	case WGDEVICE_A_LISTEN_PORT:
 		if (!mnl_attr_validate(attr, MNL_TYPE_U16))
 			device->listen_port = mnl_attr_get_u16(attr);
@@ -456,10 +492,17 @@ static void coalesce_peers(struct wgdevice *device)
 	struct wgpeer *old_next_peer, *peer = device->first_peer;
 
 	while (peer && peer->next_peer) {
-		if (memcmp(peer->public_key, peer->next_peer->public_key, sizeof(peer->public_key))) {
-			peer = peer->next_peer;
-			continue;
-		}
+	    if(peer->flags & WGPEER_HAS_PQ_PUBLIC_KEY_PATH) {
+            if (strcmp(peer->pq_pk_path, peer->next_peer->pq_pk_path)) {
+                peer = peer->next_peer;
+                continue;
+            }
+        } else {
+            if (memcmp(peer->public_key, peer->next_peer->public_key, sizeof(peer->public_key))) {
+                peer = peer->next_peer;
+                continue;
+            }
+        }
 		if (!peer->first_allowedip) {
 			peer->first_allowedip = peer->next_peer->first_allowedip;
 			peer->last_allowedip = peer->next_peer->last_allowedip;

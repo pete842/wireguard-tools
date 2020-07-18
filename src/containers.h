@@ -21,6 +21,12 @@
 #ifndef WG_KEY_LEN
 #define WG_KEY_LEN 32
 #endif
+#ifndef WG_PQ_KEY_PATH_MAX
+#define WG_PQ_KEY_PATH_MAX 256
+#endif
+
+// PQ crypto parameters
+#include "kyber/params.h"
 
 /* Cross platform __kernel_timespec */
 struct timespec64 {
@@ -43,7 +49,12 @@ enum {
 	WGPEER_REPLACE_ALLOWEDIPS = 1U << 1,
 	WGPEER_HAS_PUBLIC_KEY = 1U << 2,
 	WGPEER_HAS_PRESHARED_KEY = 1U << 3,
-	WGPEER_HAS_PERSISTENT_KEEPALIVE_INTERVAL = 1U << 4
+	WGPEER_HAS_PERSISTENT_KEEPALIVE_INTERVAL = 1U << 4,
+
+	// (pete842) PQ Crypto
+    WGPEER_HAS_PQ_PUBLIC_KEY = 1U << 5,
+    WGPEER_HAS_PQ_PUBLIC_KEY_TRUNC = 1U << 6,
+    WGPEER_HAS_PQ_PUBLIC_KEY_PATH = 1U << 7,
 };
 
 struct wgpeer {
@@ -64,14 +75,26 @@ struct wgpeer {
 
 	struct wgallowedip *first_allowedip, *last_allowedip;
 	struct wgpeer *next_peer;
+
+	// (pete842) PQ Crypto
+    uint8_t pq_pk_trunc[WG_KEY_LEN];
+    uint8_t pq_pk[KYBER_PUBLICKEYBYTES];
+    char pq_pk_path[WG_PQ_KEY_PATH_MAX];
 };
 
 enum {
 	WGDEVICE_REPLACE_PEERS = 1U << 0,
-	WGDEVICE_HAS_PRIVATE_KEY = 1U << 1,
-	WGDEVICE_HAS_PUBLIC_KEY = 1U << 2,
+    WGDEVICE_HAS_PRIVATE_KEY = 1U << 1,
+    WGDEVICE_HAS_PUBLIC_KEY = 1U << 2,
 	WGDEVICE_HAS_LISTEN_PORT = 1U << 3,
-	WGDEVICE_HAS_FWMARK = 1U << 4
+	WGDEVICE_HAS_FWMARK = 1U << 4,
+
+    // (pete842) PQ Crypto
+    WGDEVICE_HAS_PQ_SECRET_KEY = 1U << 5,
+    WGDEVICE_HAS_PQ_SECRET_KEY_PATH = 1U << 6,
+    WGDEVICE_HAS_PQ_PUBLIC_KEY = 1U << 7,
+    WGDEVICE_HAS_PQ_SECRET_KEY_TRUNC = 1U << 8,
+    WGDEVICE_HAS_PQ_PUBLIC_KEY_TRUNC = 1U << 9,
 };
 
 struct wgdevice {
@@ -82,6 +105,13 @@ struct wgdevice {
 
 	uint8_t public_key[WG_KEY_LEN];
 	uint8_t private_key[WG_KEY_LEN];
+
+	// (pete842) PQ Crypto
+    uint8_t pq_pk_trunc[WG_KEY_LEN];
+    uint8_t pq_sk_trunc[WG_KEY_LEN];
+    uint8_t pq_pk[KYBER_PUBLICKEYBYTES];
+    uint8_t pq_sk[KYBER_SECRETKEYBYTES];
+    char pq_sk_path[KYBER_SECRETKEYBYTES];
 
 	uint32_t fwmark;
 	uint16_t listen_port;

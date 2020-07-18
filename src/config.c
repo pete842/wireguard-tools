@@ -16,16 +16,18 @@
 #include <errno.h>
 
 #include "config.h"
+#include "parsing.h"
 #include "containers.h"
 #include "ipc.h"
 #include "encoding.h"
+#include "kyber/params.h"
 
 #define COMMENT_CHAR '#'
 
 static const char *get_value(const char *line, const char *key)
 {
 	size_t linelen = strlen(line);
-	size_t keylen = strlen(key);
+        size_t keylen = strlen(key);
 
 	if (keylen >= linelen)
 		return NULL;
@@ -74,87 +76,33 @@ static inline bool parse_port(uint16_t *port, uint32_t *flags, const char *value
 	return ret == 0;
 }
 
-static inline bool parse_fwmark(uint32_t *fwmark, uint32_t *flags, const char *value)
-{
-	unsigned long ret;
-	char *end;
-	int base = 10;
+static inline bool parse_fwmark(uint32_t *fwmark, uint32_t *flags, const char *value) {
+    unsigned long ret;
+    char *end;
+    int base = 10;
 
-	if (!strcasecmp(value, "off")) {
-		*fwmark = 0;
-		*flags |= WGDEVICE_HAS_FWMARK;
-		return true;
-	}
+    if (!strcasecmp(value, "off")) {
+        *fwmark = 0;
+        *flags |= WGDEVICE_HAS_FWMARK;
+        return true;
+    }
 
-	if (!isdigit(value[0]))
-		goto err;
+    if (!isdigit(value[0]))
+        goto err;
 
-	if (strlen(value) > 2 && value[0] == '0' && value[1] == 'x')
-		base = 16;
+    if (strlen(value) > 2 && value[0] == '0' && value[1] == 'x')
+        base = 16;
 
-	ret = strtoul(value, &end, base);
-	if (*end || ret > UINT32_MAX)
-		goto err;
+    ret = strtoul(value, &end, base);
+    if (*end || ret > UINT32_MAX)
+        goto err;
 
-	*fwmark = ret;
-	*flags |= WGDEVICE_HAS_FWMARK;
-	return true;
-err:
-	fprintf(stderr, "Fwmark is neither 0/off nor 0-0xffffffff: `%s'\n", value);
-	return false;
-}
-
-static inline bool parse_key(uint8_t key[static WG_KEY_LEN], const char *value)
-{
-	if (!key_from_base64(key, value)) {
-		fprintf(stderr, "Key is not the correct length or format: `%s'\n", value);
-		memset(key, 0, WG_KEY_LEN);
-		return false;
-	}
-	return true;
-}
-
-static bool parse_keyfile(uint8_t key[static WG_KEY_LEN], const char *path)
-{
-	FILE *f;
-	int c;
-	char dst[WG_KEY_LEN_BASE64];
-	bool ret = false;
-
-	f = fopen(path, "r");
-	if (!f) {
-		perror("fopen");
-		return false;
-	}
-
-	if (fread(dst, WG_KEY_LEN_BASE64 - 1, 1, f) != 1) {
-		/* If we're at the end and we didn't read anything, we're /dev/null or an empty file. */
-		if (!ferror(f) && feof(f) && !ftell(f)) {
-			memset(key, 0, WG_KEY_LEN);
-			ret = true;
-			goto out;
-		}
-
-		fprintf(stderr, "Invalid length key in key file\n");
-		goto out;
-	}
-	dst[WG_KEY_LEN_BASE64 - 1] = '\0';
-
-	while ((c = getc(f)) != EOF) {
-		if (!isspace(c)) {
-			fprintf(stderr, "Found trailing character in key file: `%c'\n", c);
-			goto out;
-		}
-	}
-	if (ferror(f) && errno) {
-		perror("getc");
-		goto out;
-	}
-	ret = parse_key(key, dst);
-
-out:
-	fclose(f);
-	return ret;
+    *fwmark = ret;
+    *flags |= WGDEVICE_HAS_FWMARK;
+    return true;
+    err:
+    fprintf(stderr, "Fwmark is neither 0/off nor 0-0xffffffff: `%s'\n", value);
+    return false;
 }
 
 static inline bool parse_ip(struct wgallowedip *allowedip, const char *value)
@@ -446,20 +394,46 @@ static bool process_line(struct config_ctx *ctx, const char *line)
 			ret = parse_port(&ctx->device->listen_port, &ctx->device->flags, value);
 		else if (key_match("FwMark"))
 			ret = parse_fwmark(&ctx->device->fwmark, &ctx->device->flags, value);
-		else if (key_match("PrivateKey")) {
-			ret = parse_key(ctx->device->private_key, value);
-			if (ret)
-				ctx->device->flags |= WGDEVICE_HAS_PRIVATE_KEY;
-		} else
+        else if (key_match("PrivateKey")) {
+            ret = parse_key(ctx->device->private_key, value);
+            if (ret)
+                ctx->device->flags |= WGDEVICE_HAS_PRIVATE_KEY;
+        } else if (key_match("PqSecretKeyPath")) {
+            ret = parse_keyfile_generic(ctx->device->pq_sk, value, KYBER_SECRETKEYBYTES, KYBER_SECRETKEYBYTES_B64);
+
+            if (ret) {
+                memcpy(ctx->device->pq_sk_trunc, ctx->device->pq_sk, sizeof(ctx->device->pq_sk_trunc));
+                strncpy(ctx->device->pq_sk_path, value, sizeof(ctx->device->pq_sk_path) - 1);
+                memcpy(ctx->device->pq_pk, ctx->device->pq_sk + KYBER_INDCPA_SECRETKEYBYTES, sizeof(ctx->device->pq_pk));
+                memcpy(ctx->device->pq_pk_trunc, ctx->device->pq_pk, sizeof(ctx->device->pq_pk_trunc));
+
+                ctx->device->flags |= WGDEVICE_HAS_PQ_SECRET_KEY |
+                                      WGDEVICE_HAS_PQ_SECRET_KEY_PATH |
+                                      WGDEVICE_HAS_PQ_SECRET_KEY_TRUNC |
+                                      WGDEVICE_HAS_PQ_PUBLIC_KEY |
+                                      WGDEVICE_HAS_PQ_PUBLIC_KEY_TRUNC;
+            }
+        } else
 			goto error;
 	} else if (ctx->is_peer_section) {
 		if (key_match("Endpoint"))
 			ret = parse_endpoint(&ctx->last_peer->endpoint.addr, value);
-		else if (key_match("PublicKey")) {
-			ret = parse_key(ctx->last_peer->public_key, value);
-			if (ret)
-				ctx->last_peer->flags |= WGPEER_HAS_PUBLIC_KEY;
-		} else if (key_match("AllowedIPs"))
+        else if (key_match("PqPublicKeyPath")) {
+            ret = parse_keyfile_generic(ctx->last_peer->pq_pk, value, KYBER_PUBLICKEYBYTES, KYBER_PUBLICKEYBYTES_B64);
+
+            if (ret) {
+                memcpy(ctx->last_peer->pq_pk_trunc, ctx->last_peer->pq_pk, sizeof(ctx->last_peer->pq_pk_trunc));
+                strncpy(ctx->last_peer->pq_pk_path, value, sizeof(ctx->last_peer->pq_pk_path) - 1);
+
+                ctx->last_peer->flags |= WGPEER_HAS_PQ_PUBLIC_KEY |
+                                         WGPEER_HAS_PQ_PUBLIC_KEY_TRUNC |
+                                         WGPEER_HAS_PQ_PUBLIC_KEY_PATH;
+            }
+        } else if (key_match("PublicKey")) {
+            ret = parse_key(ctx->last_peer->public_key, value);
+            if (ret)
+                ctx->last_peer->flags |= WGPEER_HAS_PUBLIC_KEY;
+        } else if (key_match("AllowedIPs"))
 			ret = parse_allowedips(ctx->last_peer, &ctx->last_allowedip, value);
 		else if (key_match("PersistentKeepalive"))
 			ret = parse_persistent_keepalive(&ctx->last_peer->persistent_keepalive_interval, &ctx->last_peer->flags, value);
@@ -522,20 +496,20 @@ bool config_read_init(struct config_ctx *ctx, bool append)
 		perror("calloc");
 		return false;
 	}
-	if (!append)
-		ctx->device->flags |= WGDEVICE_REPLACE_PEERS | WGDEVICE_HAS_PRIVATE_KEY | WGDEVICE_HAS_FWMARK | WGDEVICE_HAS_LISTEN_PORT;
+	if (!append) // (pete842) remove WGDEVICE_HAS_PRIVATE_KEY
+		ctx->device->flags |= WGDEVICE_REPLACE_PEERS | WGDEVICE_HAS_FWMARK | WGDEVICE_HAS_LISTEN_PORT;
 	return true;
 }
 
 struct wgdevice *config_read_finish(struct config_ctx *ctx)
 {
 	struct wgpeer *peer;
-
 	for_each_wgpeer(ctx->device, peer) {
-		if (!(peer->flags & WGPEER_HAS_PUBLIC_KEY)) {
-			fprintf(stderr, "A peer is missing a public key\n");
-			goto err;
-		}
+        if (!(peer->flags & WGPEER_HAS_PQ_PUBLIC_KEY) &&
+            !(peer->flags & WGPEER_HAS_PUBLIC_KEY)) {
+            fprintf(stderr, "A peer is missing a public key\n");
+            goto err;
+        }
 	}
 	return ctx->device;
 err:
@@ -583,30 +557,59 @@ struct wgdevice *config_read_cmd(char *argv[], int argc)
 			argv += 2;
 			argc -= 2;
 		} else if (!strcmp(argv[0], "private-key") && argc >= 2 && !peer) {
-			if (!parse_keyfile(device->private_key, argv[1]))
-				goto error;
-			device->flags |= WGDEVICE_HAS_PRIVATE_KEY;
-			argv += 2;
-			argc -= 2;
-		} else if (!strcmp(argv[0], "peer") && argc >= 2) {
-			struct wgpeer *new_peer = calloc(1, sizeof(*new_peer));
+            if (!parse_keyfile(device->private_key, argv[1]))
+                goto error;
+            device->flags |= WGDEVICE_HAS_PRIVATE_KEY;
+            argv += 2;
+            argc -= 2;
+        } else if (!strcmp(argv[0], "pq-sk") && argc >= 2 && !peer) {
+            if (!parse_keyfile_generic(device->pq_sk, argv[1], KYBER_SECRETKEYBYTES, KYBER_SECRETKEYBYTES_B64))
+                goto error;
+            realpath(argv[1], device->pq_sk_path);
+            device->flags |= WGDEVICE_HAS_PQ_SECRET_KEY |
+                    WGDEVICE_HAS_PQ_SECRET_KEY_PATH;
+            argv += 2;
+            argc -= 2;
+        } else if (!strcmp(argv[0], "peer") && argc >= 2) {
+            struct wgpeer *new_peer = calloc(1, sizeof(*new_peer));
 
-			allowedip = NULL;
-			if (!new_peer) {
-				perror("calloc");
-				goto error;
-			}
-			if (peer)
-				peer->next_peer = new_peer;
-			else
-				device->first_peer = new_peer;
-			peer = new_peer;
-			if (!parse_key(peer->public_key, argv[1]))
-				goto error;
-			peer->flags |= WGPEER_HAS_PUBLIC_KEY;
-			argv += 2;
-			argc -= 2;
-		} else if (!strcmp(argv[0], "remove") && argc >= 1 && peer) {
+            allowedip = NULL;
+            if (!new_peer) {
+                perror("calloc");
+                goto error;
+            }
+            if (peer)
+                peer->next_peer = new_peer;
+            else
+                device->first_peer = new_peer;
+            peer = new_peer;
+            if (!parse_key(peer->public_key, argv[1]))
+                goto error;
+            peer->flags |= WGPEER_HAS_PUBLIC_KEY;
+            argv += 2;
+            argc -= 2;
+        } else if (!strcmp(argv[0], "pq-peer") && argc >= 2) {
+            struct wgpeer *new_peer = calloc(1, sizeof(*new_peer));
+            allowedip = NULL;
+            if (!new_peer) {
+                perror("calloc");
+                goto error;
+            }
+            if (peer)
+                peer->next_peer = new_peer;
+            else
+                device->first_peer = new_peer;
+            peer = new_peer;
+            if (!parse_keyfile_generic(peer->pq_pk, argv[1], KYBER_PUBLICKEYBYTES, KYBER_PUBLICKEYBYTES_B64))
+                goto error;
+            realpath(argv[1], peer->pq_pk_path);
+            memcpy(peer->pq_pk_trunc, peer->pq_pk, sizeof(device->pq_pk_trunc));
+            peer->flags |= WGPEER_HAS_PQ_PUBLIC_KEY |
+                           WGPEER_HAS_PQ_PUBLIC_KEY_TRUNC |
+                           WGPEER_HAS_PQ_PUBLIC_KEY_PATH;
+            argv += 2;
+            argc -= 2;
+        } else if (!strcmp(argv[0], "remove") && argc >= 1 && peer) {
 			peer->flags |= WGPEER_REMOVE_ME;
 			argv += 1;
 			argc -= 1;

@@ -12,6 +12,8 @@ int showconf_main(int argc, char *argv[]);
 int set_main(int argc, char *argv[]);
 int setconf_main(int argc, char *argv[]);
 int genkey_main(int argc, char *argv[]);
+int genpqkey_main(int argc, char *argv[]);
 int pubkey_main(int argc, char *argv[]);
+int pubpqkey_main(int argc, char *argv[]);
 
 #endif

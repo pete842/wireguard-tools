@@ -19,6 +19,7 @@
 #include <netdb.h>
 
 #include "containers.h"
+#include "parsing.h"
 #include "ipc.h"
 #include "terminal.h"
 #include "encoding.h"
@@ -67,28 +68,41 @@ static void sort_peers(struct wgdevice *device)
 	free(peers);
 }
 
+static char *key_generic(const uint8_t *key, char *base64_buf, unsigned int key_len, const unsigned int b64_len)
+{
+    key_to_base64_generic(base64_buf, key, b64_len, key_len);
+    return base64_buf;
+}
+
+static char *maybe_key_generic(const uint8_t *maybe_key, char *base64_buf, bool have_it, unsigned int key_len, unsigned int b64_len)
+{
+    if (!have_it)
+        return "(none)";
+    return key_generic(maybe_key, base64_buf, key_len, b64_len);
+}
+
 static char *key(const uint8_t key[static WG_KEY_LEN])
 {
-	static char base64[WG_KEY_LEN_BASE64];
+    static char base64[WG_KEY_LEN_BASE64];
 
-	key_to_base64(base64, key);
-	return base64;
+    key_to_base64(base64, key);
+    return base64;
 }
 
 static char *maybe_key(const uint8_t maybe_key[static WG_KEY_LEN], bool have_it)
 {
-	if (!have_it)
-		return "(none)";
-	return key(maybe_key);
+    if (!have_it)
+        return "(none)";
+    return key(maybe_key);
 }
 
 static char *masked_key(const uint8_t masked_key[static WG_KEY_LEN])
 {
-	const char *var = getenv("WG_HIDE_KEYS");
+    const char *var = getenv("WG_HIDE_KEYS");
 
-	if (var && !strcmp(var, "never"))
-		return key(masked_key);
-	return "(hidden)";
+    if (var && !strcmp(var, "never"))
+        return key(masked_key);
+    return "(hidden)";
 }
 
 static char *ip(const struct wgallowedip *ip)
@@ -202,7 +216,7 @@ static char *bytes(uint64_t b)
 static const char *COMMAND_NAME;
 static void show_usage(void)
 {
-	fprintf(stderr, "Usage: %s %s { <interface> | all | interfaces } [public-key | private-key | listen-port | fwmark | peers | preshared-keys | endpoints | allowed-ips | latest-handshakes | transfer | persistent-keepalive | dump]\n", PROG_NAME, COMMAND_NAME);
+	fprintf(stderr, "Usage: %s %s { <interface> | all | interfaces } [public-key | private-key | pq-sk[-path|-trunc] | pq-pk[-path|-trunc] | listen-port | fwmark | peers | pq-peers | preshared-keys | endpoints | allowed-ips | latest-handshakes | transfer | persistent-keepalive | dump]\n", PROG_NAME, COMMAND_NAME);
 }
 
 static void pretty_print(struct wgdevice *device)
@@ -214,9 +228,15 @@ static void pretty_print(struct wgdevice *device)
 	terminal_printf(TERMINAL_FG_GREEN TERMINAL_BOLD "interface" TERMINAL_RESET ": " TERMINAL_FG_GREEN "%s" TERMINAL_RESET "\n", device->name);
 	if (device->flags & WGDEVICE_HAS_PUBLIC_KEY)
 		terminal_printf("  " TERMINAL_BOLD "public key" TERMINAL_RESET ": %s\n", key(device->public_key));
-	if (device->flags & WGDEVICE_HAS_PRIVATE_KEY)
-		terminal_printf("  " TERMINAL_BOLD "private key" TERMINAL_RESET ": %s\n", masked_key(device->private_key));
-	if (device->listen_port)
+    if (device->flags & WGDEVICE_HAS_PRIVATE_KEY)
+        terminal_printf("  " TERMINAL_BOLD "private key" TERMINAL_RESET ": %s\n", masked_key(device->private_key));
+    if (device->flags & WGDEVICE_HAS_PQ_PUBLIC_KEY)
+        terminal_printf("  " TERMINAL_BOLD "PQ pk (trunc)" TERMINAL_RESET ": %s\n", key(device->pq_pk_trunc));
+    if (device->flags & WGDEVICE_HAS_PQ_SECRET_KEY)
+        terminal_printf("  " TERMINAL_BOLD "PQ sk (trunc)" TERMINAL_RESET ": %s\n", masked_key(device->pq_sk_trunc));
+    if (device->flags & WGDEVICE_HAS_PQ_SECRET_KEY_PATH)
+        terminal_printf("  " TERMINAL_BOLD "PQ sk keyfile" TERMINAL_RESET ": %s\n", device->pq_sk_path);
+    if (device->listen_port)
 		terminal_printf("  " TERMINAL_BOLD "listening port" TERMINAL_RESET ": %u\n", device->listen_port);
 	if (device->fwmark)
 		terminal_printf("  " TERMINAL_BOLD "fwmark" TERMINAL_RESET ": 0x%x\n", device->fwmark);
@@ -225,9 +245,15 @@ static void pretty_print(struct wgdevice *device)
 		terminal_printf("\n");
 	}
 	for_each_wgpeer(device, peer) {
-		terminal_printf(TERMINAL_FG_YELLOW TERMINAL_BOLD "peer" TERMINAL_RESET ": " TERMINAL_FG_YELLOW "%s" TERMINAL_RESET "\n", key(peer->public_key));
-		if (peer->flags & WGPEER_HAS_PRESHARED_KEY)
-			terminal_printf("  " TERMINAL_BOLD "preshared key" TERMINAL_RESET ": %s\n", masked_key(peer->preshared_key));
+	    if(peer->flags & WGPEER_HAS_PQ_PUBLIC_KEY_PATH) {
+            terminal_printf(TERMINAL_FG_YELLOW TERMINAL_BOLD "pq peer" TERMINAL_RESET ": "
+                            TERMINAL_FG_YELLOW "%s" TERMINAL_RESET "\n", peer->pq_pk_path);
+            if(peer->flags & WGPEER_HAS_PQ_PUBLIC_KEY_TRUNC)
+                terminal_printf("  " TERMINAL_BOLD "PQ pk (trunc)" TERMINAL_RESET ": %s\n", key(peer->pq_pk_trunc));
+        } else
+            terminal_printf(TERMINAL_FG_YELLOW TERMINAL_BOLD "peer" TERMINAL_RESET ": " TERMINAL_FG_YELLOW "%s" TERMINAL_RESET "\n", key(peer->public_key));
+        if (peer->flags & WGPEER_HAS_PRESHARED_KEY)
+            terminal_printf("  " TERMINAL_BOLD "preshared key" TERMINAL_RESET ": %s\n", masked_key(peer->preshared_key));
 		if (peer->endpoint.addr.sa_family == AF_INET || peer->endpoint.addr.sa_family == AF_INET6)
 			terminal_printf("  " TERMINAL_BOLD "endpoint" TERMINAL_RESET ": %s\n", endpoint(&peer->endpoint.addr));
 		terminal_printf("  " TERMINAL_BOLD "allowed ips" TERMINAL_RESET ": ");
@@ -292,15 +318,47 @@ static bool ugly_print(struct wgdevice *device, const char *param, bool with_int
 	struct wgpeer *peer;
 	struct wgallowedip *allowedip;
 
-	if (!strcmp(param, "public-key")) {
-		if (with_interface)
-			printf("%s\t", device->name);
-		printf("%s\n", maybe_key(device->public_key, device->flags & WGDEVICE_HAS_PUBLIC_KEY));
-	} else if (!strcmp(param, "private-key")) {
-		if (with_interface)
-			printf("%s\t", device->name);
-		printf("%s\n", maybe_key(device->private_key, device->flags & WGDEVICE_HAS_PRIVATE_KEY));
-	} else if (!strcmp(param, "listen-port")) {
+    if (!strcmp(param, "public-key")) {
+        if (with_interface)
+            printf("%s\t", device->name);
+        printf("%s\n", maybe_key(device->public_key, device->flags & WGDEVICE_HAS_PUBLIC_KEY));
+    } else if (!strcmp(param, "private-key")) {
+        if (with_interface)
+            printf("%s\t", device->name);
+        printf("%s\n", maybe_key(device->private_key, device->flags & WGDEVICE_HAS_PRIVATE_KEY));
+    } else if (!strcmp(param, "pq-pk")) {
+        char buf[KYBER_PUBLICKEYBYTES_B64];
+        if (with_interface)
+            printf("%s\t", device->name);
+        printf("%s\n", maybe_key_generic(device->pq_pk,
+                buf,
+                device->flags & WGDEVICE_HAS_PQ_PUBLIC_KEY,
+                KYBER_PUBLICKEYBYTES,
+                KYBER_PUBLICKEYBYTES_B64));
+    } else if (!strcmp(param, "pq-pk-trunc")) {
+        if (with_interface)
+            printf("%s\t", device->name);
+        printf("%s\n", maybe_key(device->pq_pk_trunc,
+                                 device->flags & WGDEVICE_HAS_PQ_PUBLIC_KEY_TRUNC));
+    } else if (!strcmp(param, "pq-sk")) {
+        char buf[KYBER_SECRETKEYBYTES_B64];
+        if (with_interface)
+            printf("%s\t", device->name);
+        printf("%s\n", maybe_key_generic(device->pq_sk,
+                buf,
+                device->flags & WGDEVICE_HAS_PQ_SECRET_KEY,
+                KYBER_SECRETKEYBYTES,
+                KYBER_SECRETKEYBYTES_B64));
+    } else if (!strcmp(param, "pq-sk-trunc")) {
+        if (with_interface)
+            printf("%s\t", device->name);
+        printf("%s\n", maybe_key(device->pq_sk_trunc,
+                                 device->flags & WGDEVICE_HAS_PQ_SECRET_KEY_TRUNC));
+    } else if (!strcmp(param, "pq-sk-path")) {
+        if (with_interface)
+            printf("%s\t", device->name);
+        printf("%s\n", device->flags & WGDEVICE_HAS_PQ_SECRET_KEY_PATH? device->pq_sk_path : "(none)");
+    } else if (!strcmp(param, "listen-port")) {
 		if (with_interface)
 			printf("%s\t", device->name);
 		printf("%u\n", device->listen_port);
@@ -315,7 +373,10 @@ static bool ugly_print(struct wgdevice *device, const char *param, bool with_int
 		if (with_interface)
 			printf("%s\t", device->name);
 		for_each_wgpeer(device, peer) {
-			printf("%s\t", key(peer->public_key));
+            if(peer->flags & WGPEER_HAS_PUBLIC_KEY)
+                printf("%s\t", key(peer->public_key));
+            else
+			    printf("%s\t", peer->pq_pk_path);
 			if (peer->endpoint.addr.sa_family == AF_INET || peer->endpoint.addr.sa_family == AF_INET6)
 				printf("%s\n", endpoint(&peer->endpoint.addr));
 			else
@@ -325,7 +386,10 @@ static bool ugly_print(struct wgdevice *device, const char *param, bool with_int
 		for_each_wgpeer(device, peer) {
 			if (with_interface)
 				printf("%s\t", device->name);
-			printf("%s\t", key(peer->public_key));
+            if(peer->flags & WGPEER_HAS_PUBLIC_KEY)
+                printf("%s\t", key(peer->public_key));
+            else
+                printf("%s\t", peer->pq_pk_path);
 			if (peer->first_allowedip) {
 				for_each_wgallowedip(peer, allowedip)
 					printf("%s/%u%c", ip(allowedip), allowedip->cidr, allowedip->next_allowedip ? ' ' : '\n');
@@ -336,37 +400,65 @@ static bool ugly_print(struct wgdevice *device, const char *param, bool with_int
 		for_each_wgpeer(device, peer) {
 			if (with_interface)
 				printf("%s\t", device->name);
-			printf("%s\t%llu\n", key(peer->public_key), (unsigned long long)peer->last_handshake_time.tv_sec);
+			if(peer->flags & WGPEER_HAS_PUBLIC_KEY)
+                printf("%s\t%llu\n", key(peer->public_key), (unsigned long long)peer->last_handshake_time.tv_sec);
+            else
+                printf("%s\t%llu\n", peer->pq_pk_path, (unsigned long long)peer->last_handshake_time.tv_sec);
 		}
 	} else if (!strcmp(param, "transfer")) {
 		for_each_wgpeer(device, peer) {
 			if (with_interface)
 				printf("%s\t", device->name);
-			printf("%s\t%" PRIu64 "\t%" PRIu64 "\n", key(peer->public_key), (uint64_t)peer->rx_bytes, (uint64_t)peer->tx_bytes);
+            if(peer->flags & WGPEER_HAS_PUBLIC_KEY)
+                printf("%s\t%" PRIu64 "\t%" PRIu64 "\n", key(peer->public_key), (uint64_t)peer->rx_bytes, (uint64_t)peer->tx_bytes);
+            else if(peer->flags & WGPEER_HAS_PQ_PUBLIC_KEY_PATH) {
+                printf("%s\t%" PRIu64 "\t%" PRIu64 "\n",
+                        peer->pq_pk_path,
+                        (uint64_t) peer->rx_bytes,
+                        (uint64_t) peer->tx_bytes);
+            }
 		}
 	} else if (!strcmp(param, "persistent-keepalive")) {
 		for_each_wgpeer(device, peer) {
 			if (with_interface)
 				printf("%s\t", device->name);
-			if (peer->persistent_keepalive_interval)
-				printf("%s\t%u\n", key(peer->public_key), peer->persistent_keepalive_interval);
-			else
-				printf("%s\toff\n", key(peer->public_key));
+			if (peer->persistent_keepalive_interval) {
+                if (peer->flags & WGPEER_HAS_PUBLIC_KEY)
+                    printf("%s\t%u\n", key(peer->public_key), peer->persistent_keepalive_interval);
+                else
+                    printf("%s\t%u\n", peer->pq_pk_path, peer->persistent_keepalive_interval);
+            } else {
+                if (peer->flags & WGPEER_HAS_PUBLIC_KEY)
+                    printf("%s\toff\n", key(peer->public_key));
+                else
+                    printf("%s\toff\n", peer->pq_pk_path);
+            }
 		}
 	} else if (!strcmp(param, "preshared-keys")) {
 		for_each_wgpeer(device, peer) {
 			if (with_interface)
 				printf("%s\t", device->name);
-			printf("%s\t", key(peer->public_key));
+            if (peer->flags & WGPEER_HAS_PUBLIC_KEY)
+                printf("%s\t", key(peer->public_key));
+            else
+                printf("%s\t", peer->pq_pk_path);
 			printf("%s\n", maybe_key(peer->preshared_key, peer->flags & WGPEER_HAS_PRESHARED_KEY));
 		}
 	} else if (!strcmp(param, "peers")) {
-		for_each_wgpeer(device, peer) {
-			if (with_interface)
-				printf("%s\t", device->name);
-			printf("%s\n", key(peer->public_key));
-		}
-	} else if (!strcmp(param, "dump"))
+        for_each_wgpeer(device, peer) {
+            if (with_interface)
+                printf("%s\t", device->name);
+            if (peer->flags & WGPEER_HAS_PUBLIC_KEY)
+                printf("%s\n", key(peer->public_key));
+        }
+    } else if (!strcmp(param, "pq-peers")) {
+        for_each_wgpeer(device, peer) {
+            if (with_interface)
+                printf("%s\t", device->name);
+            if (peer->flags & WGPEER_HAS_PQ_PUBLIC_KEY_PATH)
+                printf("%s\n", peer->pq_pk_path);
+        }
+    } else if (!strcmp(param, "dump"))
 		dump_print(device, with_interface);
 	else {
 		fprintf(stderr, "Invalid parameter: `%s'\n", param);

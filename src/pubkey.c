@@ -8,6 +8,7 @@
 #include <ctype.h>
 
 #include "curve25519.h"
+#include "kyber/params.h"
 #include "encoding.h"
 #include "subcommands.h"
 
@@ -47,4 +48,45 @@ int pubkey_main(int argc, char *argv[])
 	key_to_base64(base64, key);
 	puts(base64);
 	return 0;
+}
+
+int pubpqkey_main(int argc, char *argv[]) {
+    uint8_t key[KYBER_SECRETKEYBYTES] __attribute__((aligned(sizeof(uintptr_t))));
+    char base64[KYBER_SECRETKEYBYTES_B64];
+    int trailing_char;
+
+    if (argc != 1) {
+        fprintf(stderr, "Usage: %s %s\n", PROG_NAME, argv[0]);
+        return 1;
+    }
+
+    if (fread(base64, 1, sizeof(base64) - 1, stdin) != sizeof(base64) - 1) {
+        errno = EINVAL;
+        fprintf(stderr, "%s: Key is not the correct length or format\n", PROG_NAME);
+        return 1;
+    }
+    base64[KYBER_SECRETKEYBYTES_B64 - 1] = '\0';
+
+    for (;;) {
+        trailing_char = getc(stdin);
+        if (!trailing_char || isspace(trailing_char) || isblank(trailing_char))
+            continue;
+        if (trailing_char == EOF)
+            break;
+        fprintf(stderr, "%s: Trailing characters found after key\n", PROG_NAME);
+        return 1;
+    }
+
+    if (!key_from_base64_generic(key, base64,KYBER_SECRETKEYBYTES,KYBER_SECRETKEYBYTES_B64 )) {
+        fprintf(stderr, "%s: Key is not the correct length or format\n", PROG_NAME);
+        return 1;
+    }
+    base64[KYBER_PUBLICKEYBYTES_B64 - 1] = '\0';
+    key_to_base64_generic(base64,
+            key + KYBER_INDCPA_SECRETKEYBYTES,
+            KYBER_PUBLICKEYBYTES_B64,
+            KYBER_PUBLICKEYBYTES);
+    puts(base64);
+    return 0;
+
 }

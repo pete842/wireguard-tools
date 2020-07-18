@@ -134,7 +134,6 @@ int setconf_main(int argc, char *argv[])
 	}
 	strncpy(device->name, argv[1], IFNAMSIZ - 1);
 	device->name[IFNAMSIZ - 1] = '\0';
-
 	if (!strcmp(argv[0], "syncconf")) {
 		if (!sync_conf(device))
 			goto cleanup;

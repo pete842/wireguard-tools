@@ -7,6 +7,9 @@ tunnels, including the
 utilities. This project supports Linux, OpenBSD, FreeBSD, macOS, Windows, and
 Android.
 
+The Linux version has been patched to supports post-quantum identity. 
+To find out how it works, please consult the different help pages of the tool, as the man pages have not yet been updated. 
+
 **More information may be found at [WireGuard.com](https://www.wireguard.com/).**
 
 ## Building

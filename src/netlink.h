@@ -308,7 +308,6 @@ static void mnl_attr_put(struct nlmsghdr *nlh, uint16_t type, size_t len,
 	struct nlattr *attr = mnl_nlmsg_get_payload_tail(nlh);
 	uint16_t payload_len = MNL_ALIGN(sizeof(struct nlattr)) + len;
 	int pad;
-
 	attr->nla_type = type;
 	attr->nla_len = payload_len;
 	memcpy(mnl_attr_get_payload(attr), data, len);

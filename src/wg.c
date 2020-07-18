@@ -24,8 +24,10 @@ static const struct {
 	{ "addconf", setconf_main, "Appends a configuration file to a WireGuard interface" },
 	{ "syncconf", setconf_main, "Synchronizes a configuration file to a WireGuard interface" },
 	{ "genkey", genkey_main, "Generates a new private key and writes it to stdout" },
+    { "genpqkey", genpqkey_main, "Generates a new Kyber key pair and writes the secret key to stdout" },
 	{ "genpsk", genkey_main, "Generates a new preshared key and writes it to stdout" },
-	{ "pubkey", pubkey_main, "Reads a private key from stdin and writes a public key to stdout" }
+	{ "pubkey", pubkey_main, "Reads a private key from stdin and writes a public key to stdout" },
+	{ "pubpqkey", pubpqkey_main, "Reads a pq private key from stdin and writes a pq public key to stdout" }
 };
 
 static void show_usage(FILE *file)
@@ -42,7 +44,7 @@ int main(int argc, char *argv[])
 	PROG_NAME = argv[0];
 
 	if (argc == 2 && (!strcmp(argv[1], "-v") || !strcmp(argv[1], "--version") || !strcmp(argv[1], "version"))) {
-		printf("wireguard-tools v%s - https://git.zx2c4.com/wireguard-tools/\n", WIREGUARD_TOOLS_VERSION);
+		printf("wireguard-tools-fork-pqc v%s - https://git.zx2c4.com/wireguard-tools/\n", WIREGUARD_TOOLS_VERSION);
 		return 0;
 	}
 	if (argc == 2 && (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help") || !strcmp(argv[1], "help"))) {

@@ -21,15 +21,31 @@ static inline void encode_base64(char dest[static 4], const uint8_t src[static 3
 
 }
 
-void key_to_base64(char base64[static WG_KEY_LEN_BASE64], const uint8_t key[static WG_KEY_LEN])
+void key_to_base64_generic(char *base64, const uint8_t *key, const unsigned base64_len, const unsigned key_len)
 {
-	unsigned int i;
+    unsigned int i;
 
-	for (i = 0; i < WG_KEY_LEN / 3; ++i)
-		encode_base64(&base64[i * 4], &key[i * 3]);
-	encode_base64(&base64[i * 4], (const uint8_t[]){ key[i * 3 + 0], key[i * 3 + 1], 0 });
-	base64[WG_KEY_LEN_BASE64 - 2] = '=';
-	base64[WG_KEY_LEN_BASE64 - 1] = '\0';
+    for (i = 0; i < key_len / 3; ++i)
+        encode_base64(&base64[i * 4], &key[i * 3]);
+
+    switch(key_len - i * 3) {
+        case 1:
+            encode_base64(&base64[i * 4], (const uint8_t[]){ key[i * 3 + 0], 0 , 0 });
+            base64[base64_len - 3] = '=';
+            base64[base64_len - 2] = '=';
+            break;
+        case 2:
+            encode_base64(&base64[i * 4], (const uint8_t[]){ key[i * 3 + 0], key[i * 3 + 1], 0 });
+            base64[base64_len - 2] = '=';
+            break;
+        default:
+            break;
+    }
+    base64[base64_len - 1] = '\0';
+}
+
+void key_to_base64(char base64[static WG_KEY_LEN_BASE64], const uint8_t key[static WG_KEY_LEN]) {
+    return key_to_base64_generic(base64, key, WG_KEY_LEN_BASE64, WG_KEY_LEN);
 }
 
 static inline int decode_base64(const char src[static 4])
@@ -47,28 +63,52 @@ static inline int decode_base64(const char src[static 4])
 	return val;
 }
 
-bool key_from_base64(uint8_t key[static WG_KEY_LEN], const char *base64)
+bool key_from_base64_generic(uint8_t *key, const char *base64, const unsigned key_len, const unsigned base64_len)
 {
 	unsigned int i;
 	volatile uint8_t ret = 0;
 	int val;
+	unsigned int pad_len = 0;
+	unsigned int last_bit;
 
-	if (strlen(base64) != WG_KEY_LEN_BASE64 - 1 || base64[WG_KEY_LEN_BASE64 - 2] != '=')
+	if (strlen(base64) != base64_len - 1)
 		return false;
 
-	for (i = 0; i < WG_KEY_LEN / 3; ++i) {
+    if (base64[base64_len - 3] == '=') {
+        pad_len = 2;
+    } else if (base64[base64_len - 2] == '=') {
+        pad_len = 1;
+    }
+
+	for (i = 0; i < key_len / 3; ++i) {
 		val = decode_base64(&base64[i * 4]);
 		ret |= (uint32_t)val >> 31;
 		key[i * 3 + 0] = (val >> 16) & 0xff;
 		key[i * 3 + 1] = (val >> 8) & 0xff;
 		key[i * 3 + 2] = val & 0xff;
 	}
-	val = decode_base64((const char[]){ base64[i * 4 + 0], base64[i * 4 + 1], base64[i * 4 + 2], 'A' });
-	ret |= ((uint32_t)val >> 31) | (val & 0xff);
-	key[i * 3 + 0] = (val >> 16) & 0xff;
-	key[i * 3 + 1] = (val >> 8) & 0xff;
+	switch (pad_len) {
+        case 1:
+            val = decode_base64((const char[]){ base64[i * 4 + 0], base64[i * 4 + 1], base64[i * 4 + 2], 'A' });
+            key[i * 3 + 0] = (val >> 16) & 0xff;
+            key[i * 3 + 1] = (val >> 8) & 0xff;
+            last_bit = 0;
+            break;
+        case 2:
+            val = decode_base64((const char[]){ base64[i * 4 + 0], base64[i * 4 + 1], 'A', 'A' });
+            key[i * 3 + 0] = (val >> 16) & 0xff;
+            last_bit = 8;
+            break;
+        default:
+            last_bit = 16;
+            break;
+    }
 
-	return 1 & ((ret - 1) >> 8);
+	return 1 & ((ret - 1) >> last_bit);
+}
+
+bool key_from_base64(uint8_t key[static WG_KEY_LEN], const char *base64) {
+    return key_from_base64_generic(key, base64, WG_KEY_LEN, WG_KEY_LEN_BASE64);
 }
 
 void key_to_hex(char hex[static WG_KEY_LEN_HEX], const uint8_t key[static WG_KEY_LEN])

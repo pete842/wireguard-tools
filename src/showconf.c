@@ -20,7 +20,7 @@
 
 int showconf_main(int argc, char *argv[])
 {
-	char base64[WG_KEY_LEN_BASE64];
+	char base64[KYBER_SECRETKEYBYTES_B64];
 	char ip[INET6_ADDRSTRLEN];
 	struct wgdevice *device = NULL;
 	struct wgpeer *peer;
@@ -42,14 +42,23 @@ int showconf_main(int argc, char *argv[])
 		printf("ListenPort = %u\n", device->listen_port);
 	if (device->fwmark)
 		printf("FwMark = 0x%x\n", device->fwmark);
-	if (device->flags & WGDEVICE_HAS_PRIVATE_KEY) {
-		key_to_base64(base64, device->private_key);
-		printf("PrivateKey = %s\n", base64);
-	}
+    if (device->flags & WGDEVICE_HAS_PRIVATE_KEY) {
+        key_to_base64(base64, device->private_key);
+        printf("PrivateKey = %s\n", base64);
+    }
+    if (device->flags & WGDEVICE_HAS_PQ_SECRET_KEY_PATH) {
+        //key_to_base64_generic(base64, device->pq_sk, KYBER_SECRETKEYBYTES_B64, KYBER_SECRETKEYBYTES);
+        printf("PqSecretKeyPath = %s\n", device->pq_sk_path);
+    }
 	printf("\n");
 	for_each_wgpeer(device, peer) {
-		key_to_base64(base64, peer->public_key);
-		printf("[Peer]\nPublicKey = %s\n", base64);
+        printf("[Peer]\n");
+        if (peer->flags & WGPEER_HAS_PQ_PUBLIC_KEY_PATH) {
+            printf("PqPublicKeyPath = %s\n", peer->pq_pk_path);
+        } else {
+            key_to_base64(base64, peer->public_key);
+            printf("PublicKey = %s\n", base64);
+        }
 		if (peer->flags & WGPEER_HAS_PRESHARED_KEY) {
 			key_to_base64(base64, peer->preshared_key);
 			printf("PresharedKey = %s\n", base64);

@@ -15,6 +15,8 @@ RUNSTATEDIR ?= /var/run
 WITH_BASHCOMPLETION ?=
 WITH_WGQUICK ?=
 WITH_SYSTEMDUNITS ?=
+VERSION_MARK ?= -fork-pqc
+KYBER_K_OK := 2 3 4
 
 ifeq ($(WITH_BASHCOMPLETION),)
 ifneq ($(strip $(wildcard $(BASHCOMPDIR))),)
@@ -34,6 +36,11 @@ ifneq ($(strip $(wildcard $(SYSTEMDUNITDIR))),)
 WITH_SYSTEMDUNITS := yes
 endif
 endif
+ifeq ($(KYBER_K),)
+KYBER_K := 3
+else ifeq ($(filter $(KYBER_K),$(KYBER_K_OK)),)
+$(error KYBER_K value needs to be one of {$(KYBER_K_OK)}.)
+endif
 
 PLATFORM ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')
 
@@ -45,10 +52,11 @@ CFLAGS += -std=gnu99 -D_GNU_SOURCE
 CFLAGS += -Wall -Wextra
 CFLAGS += -MMD -MP
 CFLAGS += -DRUNSTATEDIR="\"$(RUNSTATEDIR)\""
+CFLAGS += -DKYBER_K=$(KYBER_K)
 ifeq ($(DEBUG),yes)
 CFLAGS += -g
 endif
-WIREGUARD_TOOLS_VERSION = $(patsubst v%,%,$(shell GIT_CEILING_DIRECTORIES="$(PWD)/../.." git describe --dirty 2>/dev/null))
+WIREGUARD_TOOLS_VERSION = $(patsubst v%,%,$(shell GIT_CEILING_DIRECTORIES="$(PWD)/../.." git describe --dirty=$(VERSION_MARK) 2>/dev/null))
 ifneq ($(WIREGUARD_TOOLS_VERSION),)
 CFLAGS += -D'WIREGUARD_TOOLS_VERSION="$(WIREGUARD_TOOLS_VERSION)"'
 endif
@@ -73,10 +81,13 @@ BUILT_IN_RM := $(RM)
 RM := @a() { echo "  CLEAN   $$@"; $(BUILT_IN_RM) "$$@"; }; a
 endif
 
-wg: $(sort $(patsubst %.c,%.o,$(wildcard *.c)))
+KYBER_HEADERS = $(wildcard kyber/*.h)
+KYBER_SOURCES = $(sort $(patsubst %.c,%.o,$(wildcard kyber/*.c)))
+
+wg: $(sort $(KYBER_SOURCES) $(patsubst %.c,%.o,$(wildcard *.c)))
 
 clean:
-	$(RM) wg *.o *.d
+	$(RM) wg *.o *.d kyber/*.o kyber/*.d
 
 install: wg
 	@install -v -d "$(DESTDIR)$(BINDIR)" && install -v -m 0755 wg "$(DESTDIR)$(BINDIR)/wg"
@@ -100,3 +111,4 @@ all: wg
 .PHONY: clean install check
 
 -include *.d
+-include kyber/*.d
